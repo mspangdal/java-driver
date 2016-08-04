@@ -1,5 +1,10 @@
 ## Changelog
 
+### 3.2.0 (in progress)
+
+- [new feature] JAVA-1257: Implement a customizable StatementFormatter.
+
+
 ### 3.1.0
 
 - [new feature] JAVA-1153: Add PER PARTITION LIMIT to Select QueryBuilder.
