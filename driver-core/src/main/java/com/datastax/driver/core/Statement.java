@@ -571,4 +571,17 @@ public abstract class Statement {
         this.outgoingPayload = payload == null ? null : ImmutableMap.copyOf(payload);
         return this;
     }
+
+    @Override
+    public String toString() {
+        try {
+            return StatementFormatter.DEFAULT_INSTANCE.format(
+                    this,
+                    StatementFormatter.StatementFormatVerbosity.EXTENDED,
+                    ProtocolVersion.NEWEST_SUPPORTED,
+                    CodecRegistry.DEFAULT_INSTANCE);
+        } catch (StatementFormatter.StatementFormatException e) {
+            return super.toString();
+        }
+    }
 }
