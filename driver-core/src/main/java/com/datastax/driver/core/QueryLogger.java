@@ -15,13 +15,8 @@
  */
 package com.datastax.driver.core;
 
-import com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.nio.ByteBuffer;
-import java.util.Iterator;
-import java.util.List;
 
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
@@ -177,21 +172,17 @@ public abstract class QueryLogger implements LatencyTracker {
 
     private static final String ERROR_TEMPLATE = "[%s] [%s] Query error after %s ms: %s";
 
-    @VisibleForTesting
-    static final String TRUNCATED_OUTPUT = "... [truncated output]";
-
-    @VisibleForTesting
-    static final String FURTHER_PARAMS_OMITTED = " [further parameters omitted]";
-
-    protected volatile Cluster cluster;
-
-    private volatile ProtocolVersion protocolVersion;
-
     protected volatile int maxQueryStringLength;
 
     protected volatile int maxParameterValueLength;
 
     protected volatile int maxLoggedParameters;
+
+    protected volatile StatementFormatter formatter;
+
+    protected volatile StatementFormatter simple;
+
+    protected volatile Cluster cluster;
 
     /**
      * Private constructor. Instances of QueryLogger should be obtained via the {@link #builder()} method.
@@ -200,6 +191,7 @@ public abstract class QueryLogger implements LatencyTracker {
         this.maxQueryStringLength = maxQueryStringLength;
         this.maxParameterValueLength = maxParameterValueLength;
         this.maxLoggedParameters = maxLoggedParameters;
+        formatter = createFormatter(maxQueryStringLength, maxParameterValueLength, maxLoggedParameters);
     }
 
     /**
@@ -276,8 +268,8 @@ public abstract class QueryLogger implements LatencyTracker {
 
         protected void maybeLogSlowQuery(Host host, Statement statement, long latencyMs) {
             if (SLOW_LOGGER.isDebugEnabled()) {
-                String message = String.format(SLOW_TEMPLATE_MILLIS, cluster.getClusterName(), host, latencyMs, statementAsString(statement));
-                logQuery(statement, null, SLOW_LOGGER, message);
+                String statementAsString = statementAsString(statement, SLOW_LOGGER);
+                logQuery(SLOW_LOGGER, SLOW_TEMPLATE_MILLIS, null, cluster.getClusterName(), host, latencyMs, statementAsString);
             }
         }
     }
@@ -364,8 +356,9 @@ public abstract class QueryLogger implements LatencyTracker {
 
         protected void maybeLogSlowQuery(Host host, Statement statement, long latencyMs, long threshold) {
             if (SLOW_LOGGER.isDebugEnabled()) {
-                String message = String.format(SLOW_TEMPLATE_PERCENTILE, cluster.getClusterName(), host, latencyMs, slowQueryLatencyThresholdPercentile, threshold, statementAsString(statement));
-                logQuery(statement, null, SLOW_LOGGER, message);
+                String statementAsString = statementAsString(statement, SLOW_LOGGER);
+                logQuery(SLOW_LOGGER, SLOW_TEMPLATE_PERCENTILE, null, cluster.getClusterName(), host, latencyMs,
+                        slowQueryLatencyThresholdPercentile, threshold, statementAsString);
             }
         }
 
@@ -451,10 +444,13 @@ public abstract class QueryLogger implements LatencyTracker {
          *                             It must be strictly positive or {@code -1},
          *                             in which case the query is never truncated
          *                             (use with care).
-         *                             The default value is {@link #DEFAULT_MAX_QUERY_STRING_LENGTH}.
+         *                             The default value is {@link StatementFormatter#DEFAULT_MAX_QUERY_STRING_LENGTH}.
          * @return this {@link Builder} instance (for method chaining).
+         * @throws IllegalArgumentException if {@code maxQueryStringLength <= 0 && maxQueryStringLength != -1}.
          */
         public Builder withMaxQueryStringLength(int maxQueryStringLength) {
+            if (maxQueryStringLength <= 0 && maxQueryStringLength != -1)
+                throw new IllegalArgumentException("Invalid maxQueryStringLength, should be > 0 or -1, got " + maxQueryStringLength);
             this.maxQueryStringLength = maxQueryStringLength;
             return this;
         }
@@ -469,10 +465,13 @@ public abstract class QueryLogger implements LatencyTracker {
          *                                It must be strictly positive or {@code -1},
          *                                in which case the parameter value is never truncated
          *                                (use with care).
-         *                                The default value is {@link #DEFAULT_MAX_PARAMETER_VALUE_LENGTH}.
+         *                                The default value is {@link StatementFormatter#DEFAULT_MAX_BOUND_VALUE_LENGTH}.
          * @return this {@link Builder} instance (for method chaining).
+         * @throws IllegalArgumentException if {@code maxParameterValueLength <= 0 && maxParameterValueLength != -1}.
          */
         public Builder withMaxParameterValueLength(int maxParameterValueLength) {
+            if (maxParameterValueLength <= 0 && maxParameterValueLength != -1)
+                throw new IllegalArgumentException("Invalid maxParameterValueLength, should be > 0 or -1, got " + maxParameterValueLength);
             this.maxParameterValueLength = maxParameterValueLength;
             return this;
         }
@@ -486,10 +485,13 @@ public abstract class QueryLogger implements LatencyTracker {
          *                            by the driver. It must be strictly positive or {@code -1},
          *                            in which case all parameters will be logged, regardless of their number
          *                            (use with care).
-         *                            The default value is {@link #DEFAULT_MAX_LOGGED_PARAMETERS}.
+         *                            The default value is {@link StatementFormatter#DEFAULT_MAX_BOUND_VALUES}.
          * @return this {@link Builder} instance (for method chaining).
+         * @throws IllegalArgumentException if {@code maxLoggedParameters <= 0 && maxLoggedParameters != -1}.
          */
         public Builder withMaxLoggedParameters(int maxLoggedParameters) {
+            if (maxLoggedParameters <= 0 && maxLoggedParameters != -1)
+                throw new IllegalArgumentException("Invalid maxLoggedParameters, should be > 0 or -1, got " + maxLoggedParameters);
             this.maxLoggedParameters = maxLoggedParameters;
             return this;
         }
@@ -519,7 +521,7 @@ public abstract class QueryLogger implements LatencyTracker {
      * Return the maximum length of a CQL query string that can be logged verbatim
      * by the driver. Query strings longer than this value will be truncated
      * when logged.
-     * The default value is {@link #DEFAULT_MAX_QUERY_STRING_LENGTH}.
+     * The default value is {@link StatementFormatter#DEFAULT_MAX_QUERY_STRING_LENGTH}.
      *
      * @return The maximum length of a CQL query string that can be logged verbatim
      * by the driver.
@@ -544,13 +546,14 @@ public abstract class QueryLogger implements LatencyTracker {
         if (maxQueryStringLength <= 0 && maxQueryStringLength != -1)
             throw new IllegalArgumentException("Invalid maxQueryStringLength, should be > 0 or -1, got " + maxQueryStringLength);
         this.maxQueryStringLength = maxQueryStringLength;
+        formatter = createFormatter(maxQueryStringLength, maxParameterValueLength, maxLoggedParameters);
     }
 
     /**
      * Return the maximum length of a query parameter value that can be logged verbatim
      * by the driver. Parameter values longer than this value will be truncated
      * when logged.
-     * The default value is {@link #DEFAULT_MAX_PARAMETER_VALUE_LENGTH}.
+     * The default value is {@link StatementFormatter#DEFAULT_MAX_BOUND_VALUE_LENGTH}.
      *
      * @return The maximum length of a query parameter value that can be logged verbatim
      * by the driver.
@@ -575,13 +578,14 @@ public abstract class QueryLogger implements LatencyTracker {
         if (maxParameterValueLength <= 0 && maxParameterValueLength != -1)
             throw new IllegalArgumentException("Invalid maxParameterValueLength, should be > 0 or -1, got " + maxParameterValueLength);
         this.maxParameterValueLength = maxParameterValueLength;
+        formatter = createFormatter(maxQueryStringLength, maxParameterValueLength, maxLoggedParameters);
     }
 
     /**
      * Return the maximum number of query parameters that can be logged
      * by the driver. Queries with a number of parameters higher than this value
      * will not have all their parameters logged.
-     * The default value is {@link #DEFAULT_MAX_LOGGED_PARAMETERS}.
+     * The default value is {@link StatementFormatter#DEFAULT_MAX_BOUND_VALUES}.
      *
      * @return The maximum number of query parameters that can be logged
      * by the driver.
@@ -605,6 +609,7 @@ public abstract class QueryLogger implements LatencyTracker {
         if (maxLoggedParameters <= 0 && maxLoggedParameters != -1)
             throw new IllegalArgumentException("Invalid maxLoggedParameters, should be > 0 or -1, got " + maxLoggedParameters);
         this.maxLoggedParameters = maxLoggedParameters;
+        formatter = createFormatter(maxQueryStringLength, maxParameterValueLength, maxLoggedParameters);
     }
 
     /**
@@ -630,264 +635,53 @@ public abstract class QueryLogger implements LatencyTracker {
 
     protected void maybeLogNormalQuery(Host host, Statement statement, long latencyMs) {
         if (NORMAL_LOGGER.isDebugEnabled()) {
-            String message = String.format(NORMAL_TEMPLATE, cluster.getClusterName(), host, latencyMs, statementAsString(statement));
-            logQuery(statement, null, NORMAL_LOGGER, message);
+            String statementAsString = statementAsString(statement, NORMAL_LOGGER);
+            logQuery(NORMAL_LOGGER, NORMAL_TEMPLATE, null, cluster.getClusterName(), host, latencyMs, statementAsString);
         }
     }
 
     protected void maybeLogErrorQuery(Host host, Statement statement, Exception exception, long latencyMs) {
         if (ERROR_LOGGER.isDebugEnabled()) {
-            String message = String.format(ERROR_TEMPLATE, cluster.getClusterName(), host, latencyMs, statementAsString(statement));
-            logQuery(statement, exception, ERROR_LOGGER, message);
+            String statementAsString = statementAsString(statement, ERROR_LOGGER);
+            logQuery(ERROR_LOGGER, ERROR_TEMPLATE, exception, cluster.getClusterName(), host, latencyMs, statementAsString);
         }
     }
 
-    protected void logQuery(Statement statement, Exception exception, Logger logger, String message) {
-        boolean showParameterValues = logger.isTraceEnabled();
-        if (showParameterValues) {
-            StringBuilder params = new StringBuilder();
-            if (statement instanceof BoundStatement) {
-                appendParameters((BoundStatement) statement, params, maxLoggedParameters);
-            } else if (statement instanceof SimpleStatement) {
-                appendParameters((SimpleStatement) statement, params, maxLoggedParameters);
-            } else if (statement instanceof BatchStatement) {
-                BatchStatement batchStatement = (BatchStatement) statement;
-                int remaining = maxLoggedParameters;
-                for (Statement inner : batchStatement.getStatements()) {
-                    if (inner instanceof BoundStatement) {
-                        remaining = appendParameters((BoundStatement) inner, params, remaining);
-                    } else if (inner instanceof SimpleStatement) {
-                        remaining = appendParameters((SimpleStatement) inner, params, remaining);
-                    }
-                }
-            }
-            if (params.length() > 0)
-                params.append("]");
-            logger.trace(message + params, exception);
+    protected void logQuery(Logger logger, String template, Exception exception, Object... templateParameters) {
+        String message = String.format(template, templateParameters);
+        if (logger.isTraceEnabled()) {
+            logger.trace(message, exception);
         } else {
             logger.debug(message, exception);
         }
     }
 
-    protected String statementAsString(Statement statement) {
-        StringBuilder sb = new StringBuilder();
-        if (statement instanceof BatchStatement) {
-            BatchStatement bs = (BatchStatement) statement;
-            int statements = bs.getStatements().size();
-            int boundValues = countBoundValues(bs);
-            sb.append("[" + statements + " statements, " + boundValues + " bound values] ");
-        } else if (statement instanceof BoundStatement) {
-            int boundValues = ((BoundStatement) statement).wrapper.values.length;
-            sb.append("[" + boundValues + " bound values] ");
-        } else if (statement instanceof SimpleStatement) {
-            int boundValues = ((SimpleStatement) statement).valuesCount();
-            sb.append("[" + boundValues + " bound values] ");
-        }
-
-        append(statement, sb, maxQueryStringLength);
-        return sb.toString();
+    protected String statementAsString(Statement statement, Logger logger) {
+        ProtocolVersion protocolVersion = cluster.getConfiguration().getProtocolOptions().getProtocolVersion();
+        CodecRegistry codecRegistry = cluster.getConfiguration().getCodecRegistry();
+        StatementFormatter.StatementFormatVerbosity verbosity = logger.isTraceEnabled() ?
+                StatementFormatter.StatementFormatVerbosity.EXTENDED :
+                StatementFormatter.StatementFormatVerbosity.NORMAL;
+        return formatter.format(statement, verbosity, protocolVersion, codecRegistry);
     }
 
-    protected int countBoundValues(BatchStatement bs) {
-        int count = 0;
-        for (Statement s : bs.getStatements()) {
-            if (s instanceof BoundStatement)
-                count += ((BoundStatement) s).wrapper.values.length;
-            else if (s instanceof SimpleStatement)
-                count += ((SimpleStatement) s).valuesCount();
-        }
-        return count;
-    }
-
-    protected int appendParameters(BoundStatement statement, StringBuilder buffer, int remaining) {
-        if (remaining == 0)
-            return 0;
-        ColumnDefinitions metadata = statement.preparedStatement().getVariables();
-        int numberOfParameters = metadata.size();
-        if (numberOfParameters > 0) {
-            List<ColumnDefinitions.Definition> definitions = metadata.asList();
-            int numberOfLoggedParameters;
-            if (remaining == -1) {
-                numberOfLoggedParameters = numberOfParameters;
-            } else {
-                numberOfLoggedParameters = Math.min(remaining, numberOfParameters);
-                remaining -= numberOfLoggedParameters;
-            }
-            for (int i = 0; i < numberOfLoggedParameters; i++) {
-                if (buffer.length() == 0)
-                    buffer.append(" [");
-                else
-                    buffer.append(", ");
-                String value = statement.isSet(i)
-                        ? parameterValueAsString(definitions.get(i), statement.wrapper.values[i])
-                        : "<UNSET>";
-                buffer.append(String.format("%s:%s", metadata.getName(i), value));
-            }
-            if (numberOfLoggedParameters < numberOfParameters) {
-                buffer.append(FURTHER_PARAMS_OMITTED);
-            }
-        }
-        return remaining;
-    }
-
-    protected String parameterValueAsString(ColumnDefinitions.Definition definition, ByteBuffer raw) {
-        String valueStr;
-        if (raw == null || raw.remaining() == 0) {
-            valueStr = "NULL";
+    private static StatementFormatter createFormatter(int maxQueryStringLength, int maxParameterValueLength, int maxLoggedParameters) {
+        StatementFormatter.Builder builder = StatementFormatter.builder();
+        if (maxQueryStringLength == -1) {
+            builder.withUnlimitedQueryStringLength();
         } else {
-            DataType type = definition.getType();
-            CodecRegistry codecRegistry = cluster.getConfiguration().getCodecRegistry();
-            TypeCodec<Object> codec = codecRegistry.codecFor(type);
-            int maxParameterValueLength = this.maxParameterValueLength;
-            if (type.equals(DataType.blob()) && maxParameterValueLength != -1) {
-                // prevent large blobs from being converted to strings
-                int maxBufferLength = Math.max(2, (maxParameterValueLength - 2) / 2);
-                boolean bufferTooLarge = raw.remaining() > maxBufferLength;
-                if (bufferTooLarge) {
-                    raw = (ByteBuffer) raw.duplicate().limit(maxBufferLength);
-                }
-                Object value = codec.deserialize(raw, protocolVersion());
-                valueStr = codec.format(value);
-                if (bufferTooLarge) {
-                    valueStr = valueStr + TRUNCATED_OUTPUT;
-                }
-            } else {
-                Object value = codec.deserialize(raw, protocolVersion());
-                valueStr = codec.format(value);
-                if (maxParameterValueLength != -1 && valueStr.length() > maxParameterValueLength) {
-                    valueStr = valueStr.substring(0, maxParameterValueLength) + TRUNCATED_OUTPUT;
-                }
-            }
+            builder.withMaxQueryStringLength(maxQueryStringLength);
         }
-        return valueStr;
-    }
-
-    protected int appendParameters(SimpleStatement statement, StringBuilder buffer, int remaining) {
-        if (remaining == 0)
-            return 0;
-        int numberOfParameters = statement.valuesCount();
-        if (numberOfParameters > 0) {
-            int numberOfLoggedParameters;
-            if (remaining == -1) {
-                numberOfLoggedParameters = numberOfParameters;
-            } else {
-                numberOfLoggedParameters = remaining > numberOfParameters ? numberOfParameters : remaining;
-                remaining -= numberOfLoggedParameters;
-            }
-            Iterator<String> valueNames = null;
-            if (statement.usesNamedValues()) {
-                valueNames = statement.getValueNames().iterator();
-            }
-            for (int i = 0; i < numberOfLoggedParameters; i++) {
-                if (buffer.length() == 0)
-                    buffer.append(" [");
-                else
-                    buffer.append(", ");
-                if (valueNames != null && valueNames.hasNext()) {
-                    String valueName = valueNames.next();
-                    buffer.append(String.format("%s:%s", valueName, parameterValueAsString(statement.getObject(valueName))));
-                } else {
-                    buffer.append(parameterValueAsString(statement.getObject(i)));
-                }
-            }
-            if (numberOfLoggedParameters < numberOfParameters) {
-                buffer.append(FURTHER_PARAMS_OMITTED);
-            }
-        }
-        return remaining;
-    }
-
-    protected String parameterValueAsString(Object value) {
-        String valueStr;
-        if (value == null) {
-            valueStr = "NULL";
+        if (maxParameterValueLength == -1) {
+            builder.withUnlimitedBoundValueLength();
         } else {
-            CodecRegistry codecRegistry = cluster.getConfiguration().getCodecRegistry();
-            TypeCodec<Object> codec = codecRegistry.codecFor(value);
-            int maxParameterValueLength = this.maxParameterValueLength;
-            if (codec.cqlType.equals(DataType.blob()) && maxParameterValueLength != -1) {
-                // prevent large blobs from being converted to strings
-                ByteBuffer buf = (ByteBuffer) value;
-                int maxBufferLength = Math.max(2, (maxParameterValueLength - 2) / 2);
-                boolean bufferTooLarge = buf.remaining() > maxBufferLength;
-                if (bufferTooLarge) {
-                    value = (ByteBuffer) buf.duplicate().limit(maxBufferLength);
-                }
-                valueStr = codec.format(value);
-                if (bufferTooLarge) {
-                    valueStr = valueStr + TRUNCATED_OUTPUT;
-                }
-            } else {
-                valueStr = codec.format(value);
-                if (maxParameterValueLength != -1 && valueStr.length() > maxParameterValueLength) {
-                    valueStr = valueStr.substring(0, maxParameterValueLength) + TRUNCATED_OUTPUT;
-                }
-            }
+            builder.withMaxBoundValueLength(maxParameterValueLength);
         }
-        return valueStr;
-    }
-
-    private ProtocolVersion protocolVersion() {
-        // Since the QueryLogger can be registered before the Cluster was initialized, we can't retrieve
-        // it at construction time. Cache it field at first use (a volatile field is good enough since we
-        // don't need mutual exclusion).
-        if (protocolVersion == null) {
-            protocolVersion = cluster.getConfiguration().getProtocolOptions().getProtocolVersion();
-            // At least one connection was established when QueryLogger is invoked
-            assert protocolVersion != null : "protocol version should be defined";
-        }
-        return protocolVersion;
-    }
-
-    protected int append(Statement statement, StringBuilder buffer, int remaining) {
-        if (statement instanceof RegularStatement) {
-            RegularStatement rs = (RegularStatement) statement;
-            String query = rs.getQueryString();
-            remaining = append(query.trim(), buffer, remaining);
-        } else if (statement instanceof BoundStatement) {
-            remaining = append(((BoundStatement) statement).preparedStatement().getQueryString().trim(), buffer, remaining);
-        } else if (statement instanceof BatchStatement) {
-            BatchStatement batchStatement = (BatchStatement) statement;
-            remaining = append("BEGIN", buffer, remaining);
-            switch (batchStatement.batchType) {
-                case UNLOGGED:
-                    append(" UNLOGGED", buffer, remaining);
-                    break;
-                case COUNTER:
-                    append(" COUNTER", buffer, remaining);
-                    break;
-            }
-            remaining = append(" BATCH", buffer, remaining);
-            for (Statement stmt : batchStatement.getStatements()) {
-                remaining = append(" ", buffer, remaining);
-                remaining = append(stmt, buffer, remaining);
-            }
-            remaining = append(" APPLY BATCH", buffer, remaining);
+        if (maxLoggedParameters == -1) {
+            builder.withUnlimitedBoundValues();
         } else {
-            // Unknown types of statement
-            // Call toString() as a last resort
-            remaining = append(statement.toString(), buffer, remaining);
+            builder.withMaxBoundValues(maxLoggedParameters);
         }
-        if (buffer.charAt(buffer.length() - 1) != ';') {
-            remaining = append(";", buffer, remaining);
-        }
-        return remaining;
+        return builder.build();
     }
-
-    protected int append(CharSequence str, StringBuilder buffer, int remaining) {
-        if (remaining == -2) {
-            // capacity exceeded
-        } else if (remaining == -1) {
-            // unlimited capacity
-            buffer.append(str);
-        } else if (str.length() > remaining) {
-            buffer.append(str, 0, remaining).append(TRUNCATED_OUTPUT);
-            remaining = -2;
-        } else {
-            buffer.append(str);
-            remaining -= str.length();
-        }
-        return remaining;
-    }
-
 }
