@@ -783,19 +783,21 @@ public class QueryBuilderTest {
         select = select().all().from("foo").where(eq("k", 4)).and(lte(Arrays.asList("c1", "c2"), Arrays.<Object>asList("a", 2)));
         assertEquals(select.toString(), query);
 
-        query = "SELECT * FROM foo WHERE k=4 AND (c1,c2) IN ((1,2),('foo','bar'));";
+        query = "SELECT * FROM foo WHERE k=4 AND (c1,c2) IN ((1,'foo'),(2,'bar'),(3,'qix'));";
         List<String> names = ImmutableList.of("c1", "c2");
-        List<List<?>> values = ImmutableList.<List<?>>of(
-                ImmutableList.of(1, 2),
-                ImmutableList.of("foo", "bar"));
+        List<?> values = ImmutableList.<List<?>>of(
+                ImmutableList.of(1, "foo"),
+                ImmutableList.of(2, "bar"),
+                ImmutableList.of(3, "qix"));
         select = select().all().from("foo").where(eq("k", 4)).and(in(names, values));
         assertEquals(select.toString(), query);
 
-        query = "SELECT * FROM foo WHERE k=4 AND (c1,c2) IN ((1,2),?);";
+        query = "SELECT * FROM foo WHERE k=4 AND (c1,c2) IN ((1,'foo'),(2,?),?);";
         names = ImmutableList.of("c1", "c2");
-        values = ImmutableList.<List<?>>of(
-                ImmutableList.of(1, 2),
-                ImmutableList.of(bindMarker()));
+        values = ImmutableList.of(
+                ImmutableList.of(1, "foo"),
+                ImmutableList.of(2, bindMarker()),
+                bindMarker());
         select = select().all().from("foo").where(eq("k", 4)).and(in(names, values));
         assertEquals(select.toString(), query);
     }

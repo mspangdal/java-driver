@@ -1,5 +1,10 @@
 ## Changelog
 
+### 3.0.6 (in progress)
+
+- [improvement] JAVA-866: Support tuple notation in QueryBuilder.eq/in.
+
+
 ### 3.0.5
 
 - [bug] JAVA-1312: QueryBuilder modifies selected columns when manually selected.
