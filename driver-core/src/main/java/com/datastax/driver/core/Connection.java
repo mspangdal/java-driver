@@ -179,13 +179,13 @@ class Connection {
 
         Executor initExecutor = factory.manager.configuration.getPoolingOptions().getInitializationExecutor();
 
-        ListenableFuture<Void> initializeTransportFuture = Futures.transform(channelReadyFuture,
+        ListenableFuture<Void> initializeTransportFuture = Futures.transformAsync(channelReadyFuture,
                 onChannelReady(protocolVersion, initExecutor), initExecutor);
 
         // Fallback on initializeTransportFuture so we can properly propagate specific exceptions.
-        ListenableFuture<Void> initFuture = Futures.withFallback(initializeTransportFuture, new FutureFallback<Void>() {
+        ListenableFuture<Void> initFuture = Futures.catchingAsync(initializeTransportFuture, Throwable.class, new AsyncFunction<Throwable, Void>() {
             @Override
-            public ListenableFuture<Void> create(Throwable t) throws Exception {
+            public ListenableFuture<Void> apply(Throwable t) throws Exception {
                 SettableFuture<Void> future = SettableFuture.create();
                 // Make sure the connection gets properly closed.
                 if (t instanceof ClusterNameMismatchException || t instanceof UnsupportedProtocolVersionException) {
@@ -233,7 +233,7 @@ class Connection {
             public ListenableFuture<Void> apply(Void input) throws Exception {
                 ProtocolOptions.Compression compression = factory.configuration.getProtocolOptions().getCompression();
                 Future startupResponseFuture = write(new Requests.Startup(compression));
-                return Futures.transform(startupResponseFuture,
+                return Futures.transformAsync(startupResponseFuture,
                         onStartupResponse(protocolVersion, initExecutor), initExecutor);
             }
         };
@@ -299,7 +299,7 @@ class Connection {
         DefaultResultSetFuture clusterNameFuture = new DefaultResultSetFuture(null, protocolVersion, new Requests.Query("select cluster_name from system.local"));
         try {
             write(clusterNameFuture);
-            return Futures.transform(clusterNameFuture,
+            return Futures.transformAsync(clusterNameFuture,
                     new AsyncFunction<ResultSet, Void>() {
                         @Override
                         public ListenableFuture<Void> apply(ResultSet rs) throws Exception {
@@ -325,7 +325,7 @@ class Connection {
         Requests.Credentials creds = new Requests.Credentials(((ProtocolV1Authenticator) authenticator).getCredentials());
         try {
             Future authResponseFuture = write(creds);
-            return Futures.transform(authResponseFuture,
+            return Futures.transformAsync(authResponseFuture,
                     new AsyncFunction<Message.Response, Void>() {
                         @Override
                         public ListenableFuture<Void> apply(Message.Response authResponse) throws Exception {
@@ -352,7 +352,7 @@ class Connection {
 
         try {
             Future authResponseFuture = write(new Requests.AuthResponse(initialResponse));
-            return Futures.transform(authResponseFuture, onV2AuthResponse(authenticator, protocolVersion, executor), executor);
+            return Futures.transformAsync(authResponseFuture, onV2AuthResponse(authenticator, protocolVersion, executor), executor);
         } catch (Exception e) {
             return Futures.immediateFailedFuture(e);
         }
@@ -378,7 +378,7 @@ class Connection {
                             // Otherwise, send the challenge response back to the server
                             logger.trace("{} Sending Auth response to challenge", this);
                             Future nextResponseFuture = write(new Requests.AuthResponse(responseToServer));
-                            return Futures.transform(nextResponseFuture, onV2AuthResponse(authenticator, protocolVersion, executor), executor);
+                            return Futures.transformAsync(nextResponseFuture, onV2AuthResponse(authenticator, protocolVersion, executor), executor);
                         }
                     case ERROR:
                         // This is not very nice, but we're trying to identify if we

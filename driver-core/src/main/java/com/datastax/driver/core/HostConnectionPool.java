@@ -162,16 +162,16 @@ class HostConnectionPool implements Connection.Owner {
     }
 
     private ListenableFuture<Void> handleErrors(ListenableFuture<Void> connectionInitFuture, Executor executor) {
-        return Futures.withFallback(connectionInitFuture, new FutureFallback<Void>() {
+        return Futures.catchingAsync(connectionInitFuture, Throwable.class, new AsyncFunction<Throwable, Void>() {
             @Override
-            public ListenableFuture<Void> create(Throwable t) throws Exception {
+            public ListenableFuture<Void> apply(Throwable t) throws Exception {
                 // Propagate these exceptions because they mean no connection will ever succeed. They will be handled
                 // accordingly in SessionManager#maybeAddPool.
-                Throwables.propagateIfInstanceOf(t, ClusterNameMismatchException.class);
-                Throwables.propagateIfInstanceOf(t, UnsupportedProtocolVersionException.class);
+                Throwables.throwIfInstanceOf(t, ClusterNameMismatchException.class);
+                Throwables.throwIfInstanceOf(t, UnsupportedProtocolVersionException.class);
 
                 // We don't want to swallow Errors either as they probably indicate a more serious issue (OOME...)
-                Throwables.propagateIfInstanceOf(t, Error.class);
+                Throwables.throwIfInstanceOf(t, Error.class);
 
                 // Otherwise, return success. The pool will simply ignore this connection when it sees that it's been closed.
                 return MoreFutures.VOID_SUCCESS;
@@ -625,7 +625,7 @@ class HostConnectionPool implements Connection.Owner {
                     if (connection.state.compareAndSet(OPEN, GONE))
                         open.decrementAndGet();
                 }
-            }, MoreExecutors.sameThreadExecutor());
+            }, MoreExecutors.newDirectExecutorService());
             futures.add(future);
         }
 
